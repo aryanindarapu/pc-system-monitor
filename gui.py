@@ -18,6 +18,7 @@ try:
     gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)  # Assuming a single GPU
 except:
     NVML_AVAILABLE = False
+    print("GPU Not Available")
 
 class SystemMonitor(QWidget):
     def __init__(self):
@@ -110,7 +111,7 @@ class SystemMonitor(QWidget):
             layout.addLayout(gpu_info_layout)
             gpu_name = pynvml.nvmlDeviceGetName(gpu_handle).decode('utf-8')
             gpu_info_layout.addWidget(QLabel("GPU Model:"), 0, 0)
-            gpu_info_layout.addWidget(QLabel(gpu_name), 0, 1)
+            gpu_info_layout.addWidget(QLabel(str(gpu_name)[2:-1]), 0, 1)
 
             # Dynamic GPU Usage
             self.gpu_usage_label = QLabel("GPU Usage: 0%")
@@ -121,6 +122,7 @@ class SystemMonitor(QWidget):
             self.gpu_plot.setYRange(0, 100)
             self.gpu_plot.setXRange(0, 60)
             self.gpu_plot.setLimits(yMin=0, yMax=100)
+            self.gpu_plot.setLimits(xMin=0, xMax=60)
             self.gpu_plot.setMouseEnabled(y=False)  # Disable y-axis zoom and pan
             layout.addWidget(self.gpu_plot)
             self.gpu_data = []
