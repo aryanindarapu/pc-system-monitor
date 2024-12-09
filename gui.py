@@ -1,3 +1,5 @@
+#!/bin/bash
+
 import sys
 import time
 import psutil
@@ -10,6 +12,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QTimer, Qt
 
 PLOT_LENGTH = 60 + 1
+io_chip_name = 'it8689'
 
 # Initialize NVML for GPU metrics
 try:
@@ -18,7 +21,7 @@ try:
     gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)  # Assuming a single GPU
 except:
     NVML_AVAILABLE = False
-    print("GPU Not Available")
+    print("GPU not available")
 
 class SystemMonitor(QWidget):
     def __init__(self):
@@ -69,16 +72,17 @@ class SystemMonitor(QWidget):
         # CPU Usage per Core Graph
         self.cpu_plot = pg.PlotWidget(title="CPU Usage per Core (%)")
         self.cpu_plot.setYRange(0, 100)
-        self.cpu_plot.setXRange(0, 60)
+        self.cpu_plot.setXRange(0, PLOT_LENGTH)
 
         self.cpu_plot.setLimits(yMin=0, yMax=100)
-        self.cpu_plot.setMouseEnabled(x=False, y=False)  # Disable y-axis zoom and pan
+        self.cpu_plot.setLimits(xMin=0, xMax=PLOT_LENGTH)
+        self.cpu_plot.setMouseEnabled(x=False)  # Disable y-axis zoom and pan
         layout.addWidget(self.cpu_plot)
-        self.cpu_plot.addLegend()
+        # self.cpu_plot.addLegend()
         self.cpu_data = [[] for _ in range(num_cores)]
         self.cpu_curves = []
         # colors = ['r', 'g', 'b', 'c', 'm', 'y', 'w', 'k']
-        colors = colors = [
+        colors = [
             'r', 'g', 'b', 'c', 'm', 'y', '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', 
             '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf', '#9edae5', 
             '#393b79', '#637939', '#8c6d31', '#843c39', '#5254a3', '#6b6ecf', '#637939', 
@@ -90,6 +94,51 @@ class SystemMonitor(QWidget):
             color = colors[i % len(colors)]
             curve = self.cpu_plot.plot(self.cpu_data[i], pen=color, name=f"Core {i}")
             self.cpu_curves.append(curve)
+        
+        # Temperature plot
+        self.cpu_temp_plot = pg.PlotWidget(title="CPU Temperature (°C)")
+        self.cpu_temp_plot.setYRange(0, 110)
+        self.cpu_temp_plot.setXRange(0, PLOT_LENGTH)
+        self.cpu_temp_plot.setLimits(yMin=0, yMax=110)
+        self.cpu_temp_plot.setLimits(xMin=0, xMax=PLOT_LENGTH)
+        self.cpu_temp_plot.setMouseEnabled(x=False)  # Disable zoom and pan
+        layout.addWidget(self.cpu_temp_plot)
+        self.cpu_temp_data = []
+        self.cpu_temp_curve = self.cpu_temp_plot.plot(self.cpu_temp_data, pen='r')
+        
+        # Dashed line at 80°C
+        # self.cpu_temp_threshold_line = pg.InfiniteLine(pos=80, angle=0, pen=pg.mkPen('y', style=pg.QtCore.Qt.DashLine))
+        # self.cpu_temp_plot.addItem(self.cpu_temp_threshold_line)
+
+        # Shade the area above 80°C
+        self.cpu_temp_shade = pg.LinearRegionItem([80, 111], orientation='horizontal', brush=(255, 0, 0, 50))
+        self.cpu_temp_shade.setMovable(False)
+        self.cpu_temp_plot.addItem(self.cpu_temp_shade)
+        
+        # Fan plot
+        # Updated to handle multiple fans
+        self.cpu_fan_plot = pg.PlotWidget(title="CPU Fan Speeds (RPM)")
+        self.cpu_fan_plot.setYRange(0, 4000)  # Adjust the max RPM as per your fans
+        self.cpu_fan_plot.setXRange(0, PLOT_LENGTH)
+        self.cpu_fan_plot.setLimits(yMin=0, yMax=4000)
+        self.cpu_fan_plot.setLimits(xMin=0, xMax=PLOT_LENGTH)
+        self.cpu_fan_plot.setMouseEnabled(x=False)  # Disable zoom and pan
+        layout.addWidget(self.cpu_fan_plot)
+
+        # Dictionary to store data for each fan
+        self.cpu_fan_data = []
+        self.cpu_fan_curves = []
+        
+        # Initialize data and curves for each fan
+        for i in range(len(psutil.sensors_fans()[io_chip_name])):
+            color = colors[i % len(colors)]
+            
+            self.cpu_fan_data.append([])
+            curve = self.cpu_fan_plot.plot(
+                self.cpu_fan_data[i], pen=color, name=f"Fan{i}"
+            )  # Unique pen color and label
+            self.cpu_fan_curves.append(curve)
+
         
         # num_colors = 32
         # colors = [cm.hsv(i / num_colors) for i in range(num_colors)]  # Generates RGB tuples
@@ -109,24 +158,68 @@ class SystemMonitor(QWidget):
             # Static GPU Info
             gpu_info_layout = QGridLayout()
             layout.addLayout(gpu_info_layout)
-            gpu_name = pynvml.nvmlDeviceGetName(gpu_handle).decode('utf-8')
+            gpu_name = pynvml.nvmlDeviceGetName(gpu_handle).encode('utf-8')
+            # print(str(gpu_name))
             gpu_info_layout.addWidget(QLabel("GPU Model:"), 0, 0)
             gpu_info_layout.addWidget(QLabel(str(gpu_name)[2:-1]), 0, 1)
 
             # Dynamic GPU Usage
             self.gpu_usage_label = QLabel("GPU Usage: 0%")
             layout.addWidget(self.gpu_usage_label)
+            
+            # Get total GPU memory (in MB)
+            memory_info = pynvml.nvmlDeviceGetMemoryInfo(gpu_handle)
+            total_memory_mb = memory_info.total / (1024 ** 2)  # Convert bytes to MB
 
             # GPU Usage Graph
             self.gpu_plot = pg.PlotWidget(title="GPU Usage (%)")
             self.gpu_plot.setYRange(0, 100)
-            self.gpu_plot.setXRange(0, 60)
+            self.gpu_plot.setXRange(0, PLOT_LENGTH)
             self.gpu_plot.setLimits(yMin=0, yMax=100)
-            self.gpu_plot.setLimits(xMin=0, xMax=60)
-            self.gpu_plot.setMouseEnabled(y=False)  # Disable y-axis zoom and pan
+            self.gpu_plot.setLimits(xMin=0, xMax=PLOT_LENGTH)
+            self.gpu_plot.setMouseEnabled(x=False)
             layout.addWidget(self.gpu_plot)
             self.gpu_data = []
-            self.gpu_curve = self.gpu_plot.plot(self.gpu_data, pen='r')
+            self.gpu_curve = self.gpu_plot.plot(self.gpu_data, pen='g')
+            
+            # GPU Memory Usage Graph
+            self.gpu_memory_plot = pg.PlotWidget(title="GPU Memory Usage (MB)")
+            self.gpu_memory_plot.setYRange(0, total_memory_mb)  # Dynamic max memory
+            self.gpu_memory_plot.setXRange(0, PLOT_LENGTH)
+            self.gpu_memory_plot.setLimits(yMin=0, yMax=total_memory_mb)
+            self.gpu_memory_plot.setLimits(xMin=0, xMax=PLOT_LENGTH)
+            self.gpu_memory_plot.setMouseEnabled(x=False)
+            layout.addWidget(self.gpu_memory_plot)
+            self.gpu_memory_data = []
+            self.gpu_memory_curve = self.gpu_memory_plot.plot(self.gpu_memory_data, pen='g')
+            
+            # GPU Temperature Graph
+            self.gpu_temp_plot = pg.PlotWidget(title="GPU Temperature (°C)")
+            self.gpu_temp_plot.setYRange(0, 110)
+            self.gpu_temp_plot.setXRange(0, PLOT_LENGTH)
+            self.gpu_temp_plot.setLimits(yMin=0, yMax=110)
+            self.gpu_temp_plot.setLimits(xMin=0, xMax=PLOT_LENGTH)
+            self.gpu_temp_plot.setMouseEnabled(x=False)
+            layout.addWidget(self.gpu_temp_plot)
+            self.gpu_temp_data = []
+            self.gpu_temp_curve = self.gpu_temp_plot.plot(self.gpu_temp_data, pen='r')
+            
+            # Shade the area above 80°C
+            self.gpu_temp_shade = pg.LinearRegionItem([80, 111], orientation='horizontal', brush=(255, 0, 0, 50))
+            self.gpu_temp_shade.setMovable(False)
+            self.gpu_temp_plot.addItem(self.gpu_temp_shade)
+            
+            # GPU Fan graph
+            self.gpu_fan_plot = pg.PlotWidget(title="GPU Fan Speed (%)")
+            self.gpu_fan_plot.setYRange(0, 100)
+            self.gpu_fan_plot.setXRange(0, PLOT_LENGTH)
+            self.gpu_fan_plot.setLimits(yMin=0, yMax=100)
+            self.gpu_fan_plot.setLimits(xMin=0, xMax=PLOT_LENGTH)
+            self.gpu_fan_plot.setMouseEnabled(x=False)
+            layout.addWidget(self.gpu_fan_plot)
+            self.gpu_fan_data = []
+            self.gpu_fan_curve = self.gpu_fan_plot.plot(self.gpu_fan_data, pen='b')
+
         else:
             layout.addWidget(QLabel("NVIDIA NVML library not found. GPU monitoring is unavailable."))
 
@@ -284,6 +377,29 @@ class SystemMonitor(QWidget):
             if len(self.cpu_data[i]) > PLOT_LENGTH:
                 self.cpu_data[i].pop(0)
             self.cpu_curves[i].setData(self.cpu_data[i])
+            
+        temps = psutil.sensors_temperatures()
+        # print(temps['k10temp'])
+        if 'k10temp' in temps:
+            cpu_temp = temps['k10temp'][1].current
+            self.cpu_temp_data.append(cpu_temp)
+            if len(self.cpu_temp_data) > PLOT_LENGTH:
+                self.cpu_temp_data.pop(0)
+            self.cpu_temp_curve.setData(self.cpu_temp_data)
+        else:
+            print("No CPU temperature data available.")
+            
+        fan_speeds = psutil.sensors_fans()
+        if io_chip_name in fan_speeds:
+            fans = fan_speeds[io_chip_name]
+            for i, fan in enumerate(fans):
+                self.cpu_fan_data[i].append(fan.current)
+                if len(self.cpu_fan_data[i]) > PLOT_LENGTH:
+                    self.cpu_fan_data[i].pop(0)
+                    
+                self.cpu_fan_curves[i].setData(self.cpu_fan_data[i])
+            
+        # print(fans)
 
     def update_gpu_metrics(self):
         gpu_util = pynvml.nvmlDeviceGetUtilizationRates(gpu_handle).gpu
@@ -293,6 +409,24 @@ class SystemMonitor(QWidget):
         if len(self.gpu_data) > PLOT_LENGTH:
             self.gpu_data.pop(0)
         self.gpu_curve.setData(self.gpu_data)
+        
+        gpu_temp = pynvml.nvmlDeviceGetTemperature(gpu_handle, pynvml.NVML_TEMPERATURE_GPU)
+        self.gpu_temp_data.append(gpu_temp)
+        if len(self.gpu_temp_data) > PLOT_LENGTH:
+            self.gpu_temp_data.pop(0)
+        self.gpu_temp_curve.setData(self.gpu_temp_data)
+        
+        gpu_fan = pynvml.nvmlDeviceGetFanSpeed(gpu_handle)
+        self.gpu_fan_data.append(gpu_fan)
+        self.gpu_fan_curve.setData(self.gpu_fan_data)
+        
+        # GPU Memory Usage Data
+        gpu_memory = pynvml.nvmlDeviceGetMemoryInfo(gpu_handle)
+        used_memory_mb = gpu_memory.used / (1024 ** 2)  # Convert bytes to MB
+        self.gpu_memory_data.append(used_memory_mb)
+        if len(self.gpu_memory_data) > PLOT_LENGTH:
+            self.gpu_memory_data.pop(0)
+        self.gpu_memory_curve.setData(self.gpu_memory_data)
 
     def update_ram_metrics(self):
         ram = psutil.virtual_memory()
