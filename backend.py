@@ -19,16 +19,32 @@ class BackendLogger:
         self.create_database()
 
     def create_database(self):
-        # If DB doesn't exist, create it and tables
         new_db = not os.path.exists(self.db_path)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         if new_db:
             self._create_tables()
+            # Insert start time (local time)
+            start_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor = self.conn.cursor()
+            cursor.execute("INSERT INTO session_metadata (start_time) VALUES (?)", (start_time_str,))
+            self.conn.commit()
+
 
     def _create_tables(self):
         cursor = self.conn.cursor()
-        
-        # CPU metrics
+
+        # Create the metadata table
+        cursor.execute("""
+        CREATE TABLE session_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            start_time TEXT,
+            end_time TEXT
+        )
+        """)
+        # Insert the start time
+        cursor.execute("INSERT INTO session_metadata (start_time) VALUES (datetime('now'))")
+
+        # CPU Metrics
         cursor.execute("""
         CREATE TABLE cpu_metrics (
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -38,7 +54,7 @@ class BackendLogger:
         )
         """)
 
-        # GPU metrics
+        # GPU Metrics
         cursor.execute("""
         CREATE TABLE gpu_metrics (
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -49,7 +65,7 @@ class BackendLogger:
         )
         """)
 
-        # RAM metrics
+        # RAM Metrics
         cursor.execute("""
         CREATE TABLE ram_metrics (
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -57,7 +73,7 @@ class BackendLogger:
         )
         """)
 
-        # Network metrics
+        # Network Metrics
         cursor.execute("""
         CREATE TABLE network_metrics (
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -66,7 +82,7 @@ class BackendLogger:
         )
         """)
 
-        # Disk metrics
+        # Disk Metrics
         cursor.execute("""
         CREATE TABLE disk_metrics (
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -120,19 +136,17 @@ class BackendLogger:
         self.conn.commit()
 
     def close(self):
-        # Close connection first
         if self.conn:
+            # Update end time (local time)
+            end_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor = self.conn.cursor()
+            cursor.execute("""
+            UPDATE session_metadata 
+            SET end_time = ? 
+            WHERE id = (SELECT MAX(id) FROM session_metadata)
+            """, (end_time_str,))
+            self.conn.commit()
+
             self.conn.close()
             self.conn = None
 
-        # Now rename the file to include both start and end times
-        self.end_time = datetime.now()
-        end_str = self.end_time.strftime("%Y-%m-%d_%H-%M-%S")
-
-        # New filename: start_end.db
-        new_db_filename = f"{self.start_str}___{end_str}.db"
-        new_db_path = os.path.join(os.path.dirname(self.db_path), new_db_filename)
-
-        # Rename the file
-        if os.path.exists(self.db_path):
-            os.rename(self.db_path, new_db_path)

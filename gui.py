@@ -6,12 +6,14 @@ import pyqtgraph as pg
 # Remove pynvml if not using NVIDIA GPUs
 import pynvml
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QTabWidget, QVBoxLayout, QLabel, QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView
+    QApplication, QWidget, QTabWidget, QVBoxLayout, QLabel, QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView, QPushButton
 )
 from datetime import datetime
 from PyQt5.QtCore import QTimer, Qt
 from backend import BackendLogger  # Import the backend logger
+from old_data_viewer import OldDataViewer
 
+# TODO: separate the data collection from this gui. that way, the gui is reusable based on whatever data is sent to it
 
 PLOT_LENGTH = 60 + 1
 io_chip_name = 'it8689'
@@ -28,12 +30,29 @@ except:
 def parse_datetime_from_filename(dt_str):
     """Parse a string like 'YYYY-MM-DD_HH-MM-SS' into a datetime object and return a friendly string."""
     try:
-        dt = datetime.strptime(dt_str, "%Y-%m-%d_%H-%M-%S")
+        dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
         # Return a nicer format, e.g. "Dec 18, 2024 14:30:00"
         return dt.strftime("%b %d, %Y %H:%M:%S")
     except ValueError:
         # If parsing fails, just return the original string
         return dt_str
+    
+def get_session_times_from_db(db_path):
+    """Open the DB file read-only and retrieve start/end times from session_metadata."""
+    import sqlite3
+    if not os.path.exists(db_path):
+        return None, None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cursor = conn.cursor()
+        cursor.execute("SELECT start_time, end_time FROM session_metadata ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return row[0], row[1]
+        return None, None
+    except Exception:
+        return None, None
 
 class SystemMonitor(QWidget):
     def __init__(self):
@@ -370,12 +389,10 @@ class SystemMonitor(QWidget):
 
         layout.addWidget(QLabel("Recorded Sessions:"))
 
-        # We'll use a QTableWidget to show two columns: Start Time, End Time
         table = QTableWidget()
-        table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(["Start Time", "End Time"])
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["File Name", "Start Time", "End Time", "View Data"])
 
-        # Set both columns to stretch evenly
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Stretch)
 
@@ -387,35 +404,63 @@ class SystemMonitor(QWidget):
 
         rows = []
         for f in files:
-            base = f[:-3].rstrip('.')  # should remove ".db"
-            parts = base.split('___')
-
-            if len(parts) == 1:
-                # Only start time, no end time
-                start_time_str = parse_datetime_from_filename(parts[0])
-                end_time_str = ""
-            elif len(parts) == 2:
-                # Start and end times
-                start_time_str = parse_datetime_from_filename(parts[0])
-                end_time_str = parse_datetime_from_filename(parts[1])
-            else:
-                # Unexpected format, just show filename raw
-                start_time_str = f
-                end_time_str = ""
-
-            rows.append((start_time_str, end_time_str))
+            db_path = os.path.join(db_directory, f)
+            start_time, end_time = get_session_times_from_db(db_path)
+            # If times are None, just display filename in Start Time cell
+            start_str = start_time if start_time else f
+            end_str = end_time if end_time else ""
+            rows.append((f, start_str, end_str))
 
         table.setRowCount(len(rows))
-        for i, (start_str, end_str) in enumerate(rows):
-            start_item = QTableWidgetItem(start_str)
-            end_item = QTableWidgetItem(end_str)
-            table.setItem(i, 0, start_item)
-            table.setItem(i, 1, end_item)
+        for i, (filename, start_str, end_str) in enumerate(rows):
+            # File name column: editable, without the .db extension displayed
+            display_name = filename[:-3]  # remove .db for display
+            filename_item = QTableWidgetItem(display_name)
+            filename_item.setFlags(filename_item.flags() | Qt.ItemIsEditable)
+            # Store original path in user data
+            original_path = os.path.join(db_directory, filename)
+            filename_item.setData(Qt.UserRole, original_path)
+
+            start_item = QTableWidgetItem(parse_datetime_from_filename(start_str))
+            start_item.setFlags(start_item.flags() & ~Qt.ItemIsEditable)  # Make uneditable
+
+            end_item = QTableWidgetItem(parse_datetime_from_filename(end_str))
+            end_item.setFlags(end_item.flags() & ~Qt.ItemIsEditable)  # Make uneditable
+            
+            view_button = QPushButton("Open GUI")
+            view_button.clicked.connect(lambda checked, path=original_path: self.open_old_data_viewer(path))
+
+            table.setItem(i, 0, filename_item)
+            table.setItem(i, 1, start_item)
+            table.setItem(i, 2, end_item)
+            
+            if end_str != "":
+                table.setCellWidget(i, 3, view_button)
+
+        # Assign the table to self for access in the slot
+        self.db_table = table
+
+        # Connect signal for filename changes
+        self.db_table.itemChanged.connect(self.on_filename_changed)
 
         layout.addWidget(table)
+        
+    def on_filename_changed(self, item):
+        # Check if it's the filename column
+        if item.column() == 0:
+            new_name = item.text().strip()
+            if not new_name.endswith(".db"):
+                new_name += ".db"
 
-
-
+            old_path = item.data(Qt.UserRole)
+            if old_path and os.path.exists(old_path):
+                db_directory = os.path.dirname(old_path)
+                new_path = os.path.join(db_directory, new_name)
+                # Rename file on disk
+                os.rename(old_path, new_path)
+                # Update the stored path
+                item.setData(Qt.UserRole, new_path)
+    
     def start_timers(self):
         # Timers for updating dynamic metrics
         self.cpu_timer = QTimer()
@@ -612,6 +657,11 @@ class SystemMonitor(QWidget):
             return socket.gethostname()
         except Exception as e:
             return f"Unknown ({e})"
+        
+    def open_old_data_viewer(self, db_path):
+        self.viewer = OldDataViewer(db_path)  # Store as an instance variable
+        self.viewer.show()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
