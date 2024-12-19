@@ -1,5 +1,4 @@
-#!/bin/bash
-
+import os
 import sys
 import time
 import psutil
@@ -7,9 +6,12 @@ import pyqtgraph as pg
 # Remove pynvml if not using NVIDIA GPUs
 import pynvml
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QTabWidget, QVBoxLayout, QLabel, QGridLayout, QProgressBar, QHBoxLayout
+    QApplication, QWidget, QTabWidget, QVBoxLayout, QLabel, QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView
 )
+from datetime import datetime
 from PyQt5.QtCore import QTimer, Qt
+from backend import BackendLogger  # Import the backend logger
+
 
 PLOT_LENGTH = 60 + 1
 io_chip_name = 'it8689'
@@ -22,12 +24,24 @@ try:
 except:
     NVML_AVAILABLE = False
     print("GPU not available")
+    
+def parse_datetime_from_filename(dt_str):
+    """Parse a string like 'YYYY-MM-DD_HH-MM-SS' into a datetime object and return a friendly string."""
+    try:
+        dt = datetime.strptime(dt_str, "%Y-%m-%d_%H-%M-%S")
+        # Return a nicer format, e.g. "Dec 18, 2024 14:30:00"
+        return dt.strftime("%b %d, %Y %H:%M:%S")
+    except ValueError:
+        # If parsing fails, just return the original string
+        return dt_str
 
 class SystemMonitor(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("System Monitor")
         self.setGeometry(100, 100, 1200, 800)
+        
+        self.backend = BackendLogger()
 
         self.layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -40,6 +54,7 @@ class SystemMonitor(QWidget):
         self.create_network_tab()
         self.create_disk_tab()
         self.create_system_info_tab()
+        self.create_db_files_tab()
 
         # Start timers for dynamic updates
         self.start_timers()
@@ -165,7 +180,16 @@ class SystemMonitor(QWidget):
 
             # Dynamic GPU Usage
             self.gpu_usage_label = QLabel("GPU Usage: 0%")
-            layout.addWidget(self.gpu_usage_label)
+            gpu_info_layout.addWidget(self.gpu_usage_label, 1, 0)
+
+            self.gpu_mem_usage_label = QLabel("GPU Memory Usage: 0 / 12282 MiB")
+            gpu_info_layout.addWidget(self.gpu_mem_usage_label, 1, 1)
+
+            self.gpu_temp_label = QLabel("GPU Temperature: 0 F")
+            gpu_info_layout.addWidget(self.gpu_temp_label, 1, 2)
+
+            self.gpu_fan_label = QLabel("GPU Fan Speed: 0%")
+            gpu_info_layout.addWidget(self.gpu_fan_label, 1, 3)
             
             # Get total GPU memory (in MB)
             memory_info = pynvml.nvmlDeviceGetMemoryInfo(gpu_handle)
@@ -339,6 +363,59 @@ class SystemMonitor(QWidget):
         layout.addWidget(self.uptime_label)
         self.update_uptime()
 
+    def create_db_files_tab(self):
+        self.db_tab = QWidget()
+        self.tabs.addTab(self.db_tab, "DB Files")
+        layout = QVBoxLayout(self.db_tab)
+
+        layout.addWidget(QLabel("Recorded Sessions:"))
+
+        # We'll use a QTableWidget to show two columns: Start Time, End Time
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Start Time", "End Time"])
+
+        # Set both columns to stretch evenly
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+
+        db_directory = "db"
+        if not os.path.exists(db_directory):
+            os.makedirs(db_directory)
+
+        files = sorted([f for f in os.listdir(db_directory) if f.endswith(".db")])
+
+        rows = []
+        for f in files:
+            base = f[:-3].rstrip('.')  # should remove ".db"
+            parts = base.split('___')
+
+            if len(parts) == 1:
+                # Only start time, no end time
+                start_time_str = parse_datetime_from_filename(parts[0])
+                end_time_str = ""
+            elif len(parts) == 2:
+                # Start and end times
+                start_time_str = parse_datetime_from_filename(parts[0])
+                end_time_str = parse_datetime_from_filename(parts[1])
+            else:
+                # Unexpected format, just show filename raw
+                start_time_str = f
+                end_time_str = ""
+
+            rows.append((start_time_str, end_time_str))
+
+        table.setRowCount(len(rows))
+        for i, (start_str, end_str) in enumerate(rows):
+            start_item = QTableWidgetItem(start_str)
+            end_item = QTableWidgetItem(end_str)
+            table.setItem(i, 0, start_item)
+            table.setItem(i, 1, end_item)
+
+        layout.addWidget(table)
+
+
+
     def start_timers(self):
         # Timers for updating dynamic metrics
         self.cpu_timer = QTimer()
@@ -365,9 +442,6 @@ class SystemMonitor(QWidget):
         self.uptime_timer = QTimer()
         self.uptime_timer.timeout.connect(self.update_uptime)
         self.uptime_timer.start(60000)  # Update every 1 minute
-        
-    def update_mentrics(self):
-        pass
 
     def update_cpu_metrics(self):
         cpu_usages = psutil.cpu_percent(interval=None, percpu=True)
@@ -379,7 +453,7 @@ class SystemMonitor(QWidget):
             self.cpu_curves[i].setData(self.cpu_data[i])
             
         temps = psutil.sensors_temperatures()
-        # print(temps['k10temp'])
+        cpu_temp = None
         if 'k10temp' in temps:
             cpu_temp = temps['k10temp'][1].current
             self.cpu_temp_data.append(cpu_temp)
@@ -387,46 +461,62 @@ class SystemMonitor(QWidget):
                 self.cpu_temp_data.pop(0)
             self.cpu_temp_curve.setData(self.cpu_temp_data)
         else:
-            print("No CPU temperature data available.")
-            
+            # No CPU temperature data available
+            cpu_temp = None
+
         fan_speeds = psutil.sensors_fans()
+        fan_values = []
         if io_chip_name in fan_speeds:
             fans = fan_speeds[io_chip_name]
             for i, fan in enumerate(fans):
+                fan_values.append(fan.current)
                 self.cpu_fan_data[i].append(fan.current)
                 if len(self.cpu_fan_data[i]) > PLOT_LENGTH:
                     self.cpu_fan_data[i].pop(0)
-                    
                 self.cpu_fan_curves[i].setData(self.cpu_fan_data[i])
-            
-        # print(fans)
+
+        # Log CPU metrics to the database
+        # If temp is None, just pass None or 0
+        self.backend.log_cpu_metrics(core_usage_list=cpu_usages, 
+                                     cpu_temp=cpu_temp if cpu_temp is not None else 0,
+                                     fan_speeds=fan_values)
 
     def update_gpu_metrics(self):
         gpu_util = pynvml.nvmlDeviceGetUtilizationRates(gpu_handle).gpu
         self.gpu_usage_label.setText(f"GPU Usage: {gpu_util}%")
-
         self.gpu_data.append(gpu_util)
         if len(self.gpu_data) > PLOT_LENGTH:
             self.gpu_data.pop(0)
         self.gpu_curve.setData(self.gpu_data)
+
+        # GPU Memory Usage Data
+        gpu_memory = pynvml.nvmlDeviceGetMemoryInfo(gpu_handle)
+        used_memory_mb = gpu_memory.used / (1024 ** 2)  # Convert bytes to MB
+        self.gpu_mem_usage_label.setText(f"GPU Memory Usage: {used_memory_mb:.2f} MiB")
+        self.gpu_memory_data.append(used_memory_mb)
+        if len(self.gpu_memory_data) > PLOT_LENGTH:
+            self.gpu_memory_data.pop(0)
+        self.gpu_memory_curve.setData(self.gpu_memory_data)
         
         gpu_temp = pynvml.nvmlDeviceGetTemperature(gpu_handle, pynvml.NVML_TEMPERATURE_GPU)
+        self.gpu_temp_label.setText(f"GPU Temperature: {gpu_temp} F")
         self.gpu_temp_data.append(gpu_temp)
         if len(self.gpu_temp_data) > PLOT_LENGTH:
             self.gpu_temp_data.pop(0)
         self.gpu_temp_curve.setData(self.gpu_temp_data)
         
         gpu_fan = pynvml.nvmlDeviceGetFanSpeed(gpu_handle)
+        self.gpu_fan_label.setText(f"GPU Fan Speed: {gpu_fan}%")
         self.gpu_fan_data.append(gpu_fan)
+        if len(self.gpu_fan_data) > PLOT_LENGTH:
+            self.gpu_fan_data.pop(0)
         self.gpu_fan_curve.setData(self.gpu_fan_data)
-        
-        # GPU Memory Usage Data
-        gpu_memory = pynvml.nvmlDeviceGetMemoryInfo(gpu_handle)
-        used_memory_mb = gpu_memory.used / (1024 ** 2)  # Convert bytes to MB
-        self.gpu_memory_data.append(used_memory_mb)
-        if len(self.gpu_memory_data) > PLOT_LENGTH:
-            self.gpu_memory_data.pop(0)
-        self.gpu_memory_curve.setData(self.gpu_memory_data)
+
+        # Log GPU metrics
+        self.backend.log_gpu_metrics(gpu_usage=gpu_util, 
+                                     gpu_mem_usage=used_memory_mb, 
+                                     gpu_temp=gpu_temp, 
+                                     gpu_fan=gpu_fan)
 
     def update_ram_metrics(self):
         ram = psutil.virtual_memory()
@@ -438,10 +528,13 @@ class SystemMonitor(QWidget):
             self.ram_data.pop(0)
         self.ram_curve.setData(self.ram_data)
 
+        # Log RAM metrics
+        self.backend.log_ram_metrics(ram_usage=ram_usage)
+
     def update_network_metrics(self):
         net_io = psutil.net_io_counters()
-        download_speed = (net_io.bytes_recv - self.last_net_io.bytes_recv) / 1024  # KB/s
-        upload_speed = (net_io.bytes_sent - self.last_net_io.bytes_sent) / 1024  # KB/s
+        download_speed = (net_io.bytes_recv - self.last_net_io.bytes_recv) / 1024.0  # KB/s
+        upload_speed = (net_io.bytes_sent - self.last_net_io.bytes_sent) / 1024.0   # KB/s
         self.last_net_io = net_io
 
         self.net_usage_label.setText(f"Download: {download_speed:.2f} KB/s | Upload: {upload_speed:.2f} KB/s")
@@ -454,10 +547,13 @@ class SystemMonitor(QWidget):
         self.net_download_curve.setData(self.net_download_data)
         self.net_upload_curve.setData(self.net_upload_data)
 
+        # Log Network metrics
+        self.backend.log_network_metrics(download_speed=download_speed, upload_speed=upload_speed)
+
     def update_disk_metrics(self):
         disk_io = psutil.disk_io_counters()
-        read_speed = (disk_io.read_bytes - self.last_disk_io.read_bytes) / 1024  # KB/s
-        write_speed = (disk_io.write_bytes - self.last_disk_io.write_bytes) / 1024  # KB/s
+        read_speed = (disk_io.read_bytes - self.last_disk_io.read_bytes) / 1024.0  # KB/s
+        write_speed = (disk_io.write_bytes - self.last_disk_io.write_bytes) / 1024.0 # KB/s
         self.last_disk_io = disk_io
 
         self.disk_usage_label.setText(f"Read Speed: {read_speed:.2f} KB/s | Write Speed: {write_speed:.2f} KB/s")
@@ -469,6 +565,14 @@ class SystemMonitor(QWidget):
             self.disk_write_data.pop(0)
         self.disk_read_curve.setData(self.disk_read_data)
         self.disk_write_curve.setData(self.disk_write_data)
+
+        # Log Disk metrics
+        self.backend.log_disk_metrics(read_speed=read_speed, write_speed=write_speed)
+
+    def closeEvent(self, event):
+        # Close the database connection when the GUI is closed
+        self.backend.close()
+        event.accept()
 
     def update_uptime(self):
         uptime_seconds = time.time() - psutil.boot_time()
